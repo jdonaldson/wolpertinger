@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A library for working with AWS Athena using Polars"
 authors = [{name = "J. Justin Donaldson", email = "justin_donaldson@curvolabs.com"}]
 license = {text = "MIT"}
+readme = "README.md"
 requires-python = ">=3.8"
 keywords = ["aws", "athena", "polars", "data", "analytics"]
 classifiers = [
