@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "athena-polars"
+version = "0.1.0"
+description = "A library for working with AWS Athena using Polars"
+authors = [{name = "J. Justin Donaldson", email = "justin_donaldson@curvolabs.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.8"
+keywords = ["aws", "athena", "polars", "data", "analytics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+
+dependencies = [
+    "polars>=0.20.0",
+    "boto3>=1.26.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jdonaldson/athena-polars"
+Repository = "https://github.com/jdonaldson/athena-polars"
+Issues = "https://github.com/jdonaldson/athena-polars/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.ruff]
+target-version = "py38"
+line-length = 88
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/athena_redshift_polars"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
