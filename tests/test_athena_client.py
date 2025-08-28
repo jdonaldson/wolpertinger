@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch, MagicMock
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from athena_redshift_polars import AthenaClient
+from athena_polars import AthenaClient
 
 
 @pytest.fixture

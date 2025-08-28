@@ -37,7 +37,7 @@ pip install -e ".[dev]"
 
 ```python
 import polars as pl
-from athena_redshift_polars import AthenaClient
+from athena_polars import AthenaClient
 
 # Initialize the client
 client = AthenaClient(
@@ -59,7 +59,7 @@ print(df.head())
 ### Basic Query Execution
 
 ```python
-from athena_redshift_polars import AthenaClient
+from athena_polars import AthenaClient
 
 # Initialize client
 client = AthenaClient(
@@ -132,7 +132,7 @@ df = client.get_results_polars(execution_id, max_rows=5000)
 
 ```python
 import boto3
-from athena_redshift_polars import AthenaClient
+from athena_polars import AthenaClient
 
 # Use existing session (useful for custom credential handling)
 session = boto3.Session(profile_name='my-profile')

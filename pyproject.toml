@@ -52,7 +52,7 @@ target-version = "py38"
 line-length = 88
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/athena_redshift_polars"]
+packages = ["src/athena_polars"]
 
 [tool.mypy]
 python_version = "3.8"
