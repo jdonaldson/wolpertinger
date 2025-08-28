@@ -202,18 +202,18 @@ execution_id = client.execute_query(
 
 ### Working with Different Data Types
 
-The library handles various Athena data types and converts them appropriately:
+The library automatically handles various Athena data types using PyArrow for proper type inference:
 
 ```python
-# Athena returns all values as strings initially
+# Data types are automatically inferred and converted
 df = client.get_results_polars(execution_id)
 
-# Use Polars to cast to appropriate types
-df_typed = df.with_columns([
-    pl.col("id").cast(pl.Int64),
-    pl.col("amount").cast(pl.Float64),
-    pl.col("created_date").str.strptime(pl.Date, "%Y-%m-%d"),
-    pl.col("is_active").cast(pl.Boolean)
+# Check the inferred types
+print(df.dtypes)  # [Int32, Utf8, Float64, Boolean, Date32, etc.]
+
+# No manual casting needed for basic types, but you can still cast if needed
+df_modified = df.with_columns([
+    pl.col("timestamp_col").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"),
 ])
 ```
 

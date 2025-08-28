@@ -5,8 +5,9 @@ Athena client for executing queries and returning polars DataFrames
 
 import boto3
 import polars as pl
+import pyarrow as pa
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from botocore.config import Config
 
 
@@ -112,66 +113,176 @@ class AthenaClient:
         raise TimeoutError(f"Query did not complete within {max_wait_time} seconds")
     
     def get_results_polars(self, execution_id: str, max_rows: int = 1000) -> pl.DataFrame:
-        """Get query results as a polars DataFrame with pagination support"""
-        all_rows = []
-        columns = None
-        next_token = None
-        
+        """Get query results as a Polars DataFrame using PyArrow for better type handling"""
         try:
-            while True:
-                # Prepare pagination parameters
-                params = {'QueryExecutionId': execution_id, 'MaxResults': min(max_rows, 1000)}
-                if next_token:
-                    params['NextToken'] = next_token
-                
-                response = self.client.get_query_results(**params)
-                result_set = response['ResultSet']
-                
-                # Extract column names on first iteration
-                if columns is None:
-                    columns = [col['Name'] for col in result_set['ResultSetMetadata']['ColumnInfo']]
-                    # Skip header row on first page
-                    data_rows = result_set['Rows'][1:] if not next_token else result_set['Rows']
+            # Get first batch to extract schema
+            response = self.client.get_query_results(
+                QueryExecutionId=execution_id,
+                MaxResults=min(max_rows, 1000)
+            )
+            
+            result_set = response['ResultSet']
+            column_info = result_set['ResultSetMetadata']['ColumnInfo']
+            
+            # Create PyArrow schema
+            schema_fields = []
+            for col in column_info:
+                pa_type = self._athena_type_to_pyarrow(col['Type'])
+                schema_fields.append(pa.field(col['Name'], pa_type))
+            
+            schema = pa.schema(schema_fields)
+            
+            # Initialize column data collectors
+            columns_data = {col['Name']: [] for col in column_info}
+            
+            # Process all batches
+            next_token = None
+            total_rows = 0
+            
+            while total_rows < max_rows:
+                if next_token is None:
+                    # First batch - skip header row
+                    data_rows = result_set['Rows'][1:] if result_set['Rows'] else []
                 else:
+                    # Get next batch
+                    params = {
+                        'QueryExecutionId': execution_id,
+                        'MaxResults': min(max_rows - total_rows, 1000),
+                        'NextToken': next_token
+                    }
+                    response = self.client.get_query_results(**params)
+                    result_set = response['ResultSet']
                     data_rows = result_set['Rows']
                 
-                # Extract data rows
+                # Extract data from this batch
                 for row in data_rows:
-                    row_data = []
-                    for col in row['Data']:
-                        # Handle different data types
-                        value = col.get('VarCharValue', '')
-                        if value == '':
-                            # Check for null or other data types
-                            if col.get('NullValue'):
-                                value = None
-                            else:
-                                # Handle other potential data types
-                                for key in ['BigIntValue', 'DoubleValue', 'BooleanValue']:
-                                    if key in col:
-                                        value = col[key]
-                                        break
-                        row_data.append(value)
-                    all_rows.append(row_data)
+                    if total_rows >= max_rows:
+                        break
+                        
+                    for i, col_data in enumerate(row['Data']):
+                        col_name = column_info[i]['Name']
+                        col_type = column_info[i]['Type']
+                        value = self._extract_typed_value(col_data, col_type)
+                        columns_data[col_name].append(value)
+                    
+                    total_rows += 1
                 
                 # Check for more results
                 next_token = response.get('NextToken')
-                if not next_token or len(all_rows) >= max_rows:
+                if not next_token or total_rows >= max_rows:
                     break
             
-            # Truncate if we exceeded max_rows
-            if len(all_rows) > max_rows:
-                all_rows = all_rows[:max_rows]
+            # Create PyArrow table
+            if total_rows == 0:
+                # Empty result
+                return pl.from_arrow(pa.table({col['Name']: [] for col in column_info}, schema=schema))
             
-            # Create polars DataFrame
-            if not all_rows:
-                return pl.DataFrame({col: [] for col in columns})
+            # Build PyArrow arrays with proper typing
+            arrays = []
+            for field in schema:
+                col_name = field.name
+                data = columns_data[col_name]
+                
+                try:
+                    # Let PyArrow handle the conversion with the specified type
+                    array = pa.array(data, type=field.type)
+                except (pa.ArrowInvalid, pa.ArrowTypeError) as e:
+                    # Fallback to string type if conversion fails
+                    array = pa.array([str(x) if x is not None else None for x in data], type=pa.string())
+                
+                arrays.append(array)
             
-            data_dict = {col: [row[i] for row in all_rows] for i, col in enumerate(columns)}
-            return pl.DataFrame(data_dict)
+            # Create table and convert to Polars
+            table = pa.table(arrays, names=[field.name for field in schema])
+            return pl.from_arrow(table)
             
         except Exception as e:
             raise Exception(f"Failed to retrieve query results: {str(e)}")
+    
+    def _athena_type_to_pyarrow(self, athena_type: str) -> pa.DataType:
+        """Convert Athena data type to PyArrow data type"""
+        athena_type = athena_type.lower()
+        
+        # Handle basic types
+        if athena_type in ['boolean', 'bool']:
+            return pa.bool_()
+        elif athena_type in ['tinyint', 'smallint']:
+            return pa.int16()
+        elif athena_type in ['int', 'integer']:
+            return pa.int32()
+        elif athena_type in ['bigint', 'long']:
+            return pa.int64()
+        elif athena_type in ['float', 'real']:
+            return pa.float32()
+        elif athena_type in ['double', 'double precision']:
+            return pa.float64()
+        elif athena_type == 'date':
+            return pa.date32()
+        elif athena_type.startswith('timestamp'):
+            return pa.timestamp('us')  # microsecond precision
+        elif athena_type.startswith('decimal') or athena_type.startswith('numeric'):
+            # Extract precision and scale if available
+            if '(' in athena_type:
+                params = athena_type.split('(')[1].split(')')[0].split(',')
+                precision = int(params[0])
+                scale = int(params[1]) if len(params) > 1 else 0
+                return pa.decimal128(precision, scale)
+            return pa.decimal128(38, 18)  # Default precision
+        elif athena_type.startswith('varchar') or athena_type.startswith('char'):
+            return pa.string()
+        elif athena_type in ['string', 'text']:
+            return pa.string()
+        elif athena_type.startswith('array'):
+            # Parse array element type
+            element_type_str = athena_type[6:-1]  # Remove 'array<' and '>'
+            element_type = self._athena_type_to_pyarrow(element_type_str)
+            return pa.list_(element_type)
+        elif athena_type.startswith('map'):
+            # For maps, default to string keys and string values
+            # More complex parsing could be added here
+            return pa.map_(pa.string(), pa.string())
+        else:
+            # Default to string for unknown types
+            return pa.string()
+    
+    def _extract_typed_value(self, col_data: Dict[str, Any], athena_type: str) -> Any:
+        """Extract and convert value based on Athena type"""
+        if col_data.get('NullValue'):
+            return None
+            
+        # Get the raw value
+        if 'VarCharValue' in col_data:
+            raw_value = col_data['VarCharValue']
+        elif 'BigIntValue' in col_data:
+            return col_data['BigIntValue']
+        elif 'DoubleValue' in col_data:
+            return col_data['DoubleValue']
+        elif 'BooleanValue' in col_data:
+            return col_data['BooleanValue']
+        else:
+            return None
+        
+        # Convert based on type
+        athena_type = athena_type.lower()
+        
+        if not raw_value or raw_value == '':
+            return None
+            
+        try:
+            if athena_type in ['boolean', 'bool']:
+                return raw_value.lower() in ('true', '1', 'yes')
+            elif athena_type in ['tinyint', 'smallint', 'int', 'integer']:
+                return int(raw_value)
+            elif athena_type in ['bigint', 'long']:
+                return int(raw_value)
+            elif athena_type in ['float', 'real', 'double', 'double precision']:
+                return float(raw_value)
+            elif athena_type.startswith('decimal') or athena_type.startswith('numeric'):
+                return float(raw_value)  # PyArrow will handle decimal conversion
+            else:
+                return raw_value  # Keep as string for dates, timestamps, etc.
+        except (ValueError, TypeError):
+            return raw_value  # Fallback to string if conversion fails
     
     def get_query_info(self, execution_id: str) -> Dict[str, Any]:
         """Get detailed information about a query execution"""

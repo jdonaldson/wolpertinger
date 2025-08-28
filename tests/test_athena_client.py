@@ -195,17 +195,17 @@ class TestGetResultsPolars:
     """Test get_results_polars method"""
     
     def test_get_results_basic(self, athena_client):
-        """Test basic results retrieval"""
+        """Test basic results retrieval with PyArrow type handling"""
         client, mock_athena = athena_client
         
-        # Mock response
+        # Mock response with typed data
         mock_athena.get_query_results.return_value = {
             'ResultSet': {
                 'ResultSetMetadata': {
                     'ColumnInfo': [
-                        {'Name': 'id'},
-                        {'Name': 'name'},
-                        {'Name': 'age'}
+                        {'Name': 'id', 'Type': 'integer'},
+                        {'Name': 'name', 'Type': 'varchar'},
+                        {'Name': 'age', 'Type': 'integer'}
                     ]
                 },
                 'Rows': [
@@ -223,8 +223,16 @@ class TestGetResultsPolars:
         assert isinstance(df, pl.DataFrame)
         assert df.columns == ['id', 'name', 'age']
         assert len(df) == 2
-        assert df.row(0) == ('1', 'Alice', '25')
-        assert df.row(1) == ('2', 'Bob', '30')
+        
+        # Check that types are properly inferred
+        assert df.dtypes[0] == pl.Int32  # id should be integer
+        assert df.dtypes[1] == pl.Utf8   # name should be string
+        assert df.dtypes[2] == pl.Int32  # age should be integer
+        
+        # Check actual values
+        assert df.item(0, 'id') == 1
+        assert df.item(0, 'name') == 'Alice'
+        assert df.item(0, 'age') == 25
     
     def test_get_results_empty(self, athena_client):
         """Test empty results"""
@@ -233,7 +241,10 @@ class TestGetResultsPolars:
         mock_athena.get_query_results.return_value = {
             'ResultSet': {
                 'ResultSetMetadata': {
-                    'ColumnInfo': [{'Name': 'id'}, {'Name': 'name'}]
+                    'ColumnInfo': [
+                        {'Name': 'id', 'Type': 'integer'}, 
+                        {'Name': 'name', 'Type': 'varchar'}
+                    ]
                 },
                 'Rows': [
                     # Only header row
@@ -255,7 +266,10 @@ class TestGetResultsPolars:
         mock_athena.get_query_results.return_value = {
             'ResultSet': {
                 'ResultSetMetadata': {
-                    'ColumnInfo': [{'Name': 'id'}, {'Name': 'value'}]
+                    'ColumnInfo': [
+                        {'Name': 'id', 'Type': 'integer'}, 
+                        {'Name': 'value', 'Type': 'varchar'}
+                    ]
                 },
                 'Rows': [
                     {'Data': [{'VarCharValue': 'id'}, {'VarCharValue': 'value'}]},
@@ -268,8 +282,9 @@ class TestGetResultsPolars:
         df = client.get_results_polars('test-id')
         
         assert len(df) == 2
-        assert df.row(0) == ('1', None)
-        assert df.row(1) == ('2', 'test')
+        assert df.item(0, 'id') == 1  # Should be converted to integer
+        assert df.item(0, 'value') is None  # Should handle null
+        assert df.item(1, 'value') == 'test'
     
     def test_get_results_pagination(self, athena_client):
         """Test results with pagination"""
@@ -279,7 +294,7 @@ class TestGetResultsPolars:
         first_response = {
             'ResultSet': {
                 'ResultSetMetadata': {
-                    'ColumnInfo': [{'Name': 'id'}]
+                    'ColumnInfo': [{'Name': 'id', 'Type': 'integer'}]
                 },
                 'Rows': [
                     {'Data': [{'VarCharValue': 'id'}]},
@@ -303,8 +318,8 @@ class TestGetResultsPolars:
         df = client.get_results_polars('test-id')
         
         assert len(df) == 2
-        assert df.row(0) == ('1',)
-        assert df.row(1) == ('2',)
+        assert df.item(0, 'id') == 1  # Should be converted to integer
+        assert df.item(1, 'id') == 2
         assert mock_athena.get_query_results.call_count == 2
     
     def test_get_results_error(self, athena_client):
@@ -387,3 +402,5 @@ class TestListWorkGroups:
         
         with pytest.raises(Exception, match="Failed to list work groups: AWS Error"):
             client.list_work_groups()
+
+
