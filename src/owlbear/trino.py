@@ -3,7 +3,8 @@
 
 import polars as pl
 import pyarrow as pa
-from typing import Optional, Any, Sequence
+from collections.abc import Sequence
+from typing import Optional, Any, cast
 
 from .types import presto_type_to_pyarrow
 
@@ -29,7 +30,7 @@ class TrinoClient:
         self.http_scheme = http_scheme
         self.kwargs = kwargs
 
-    def _get_connection(self):
+    def _get_connection(self) -> Any:
         """Create a new Trino connection."""
         from trino.dbapi import connect
 
@@ -88,11 +89,16 @@ class TrinoClient:
                 # Build empty DataFrame with correct schema
                 schema_fields = []
                 for name, type_str in zip(col_names, col_types):
-                    pa_type = presto_type_to_pyarrow(type_str) if type_str else pa.string()
+                    pa_type = (
+                        presto_type_to_pyarrow(type_str) if type_str else pa.string()
+                    )
                     schema_fields.append(pa.field(name, pa_type))
                 arrow_schema = pa.schema(schema_fields)
-                return pl.from_arrow(
-                    pa.table({name: [] for name in col_names}, schema=arrow_schema)
+                return cast(
+                    pl.DataFrame,
+                    pl.from_arrow(
+                        pa.table({name: [] for name in col_names}, schema=arrow_schema)
+                    ),
                 )
 
             # Transpose rows into columns
@@ -116,6 +122,6 @@ class TrinoClient:
                 fields.append(pa.field(name, pa_type))
 
             table = pa.table(arrays, names=col_names)
-            return pl.from_arrow(table)
+            return cast(pl.DataFrame, pl.from_arrow(table))
         finally:
             conn.close()

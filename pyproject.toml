@@ -68,3 +68,7 @@ exclude = [
 python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.pyright]
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
