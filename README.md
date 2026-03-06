@@ -1,6 +1,7 @@
 # owlbear
 
-<img src="owlbear.png" width="200" align="right" />
+<img src="wolpertinger.jpg" width="200" align="right" alt="Wolpertinger" />
+<sub>Image: <a href="https://en.wikipedia.org/wiki/Wolpertinger">Wolpertinger</a>, Wikimedia Commons</sub>
 
 **Feathers and claws for your data lake.**
 
