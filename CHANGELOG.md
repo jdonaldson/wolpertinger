@@ -2,6 +2,18 @@
 
 All notable changes to owlbear will be documented in this file.
 
+## [0.2.1] - 2026-03-05
+
+### Added
+
+- PEP 561 `py.typed` marker for downstream type checking support
+- Complete type annotations: all public methods now have explicit return types
+- Pyright configuration in `pyproject.toml` (`typeCheckingMode = "standard"`)
+
+### Changed
+
+- Replaced `typing.Dict`, `typing.List`, `typing.Sequence` with builtin `dict`, `list` and `collections.abc.Sequence`
+
 ## [0.2.0] - 2026-03-05
 
 ### Breaking Changes
