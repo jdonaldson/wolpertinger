@@ -3,7 +3,7 @@
 
 import polars as pl
 import pyarrow as pa
-from typing import Optional, Any
+from typing import Optional, Any, Sequence
 
 from .types import presto_type_to_pyarrow
 
@@ -50,12 +50,18 @@ class TrinoClient:
 
         return connect(**params)
 
-    def query(self, query: str, max_rows: int = 0) -> pl.DataFrame:
+    def query(
+        self,
+        query: str,
+        max_rows: int = 0,
+        parameters: Optional[Sequence[Any]] = None,
+    ) -> pl.DataFrame:
         """Execute a query and return results as a Polars DataFrame.
 
         Args:
             query: SQL query string.
             max_rows: Maximum rows to return. 0 means no limit.
+            parameters: Query parameters passed to ``cursor.execute``.
 
         Returns:
             A Polars DataFrame with typed columns.
@@ -63,7 +69,7 @@ class TrinoClient:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, params=parameters)
 
             # Fetch rows
             if max_rows > 0:

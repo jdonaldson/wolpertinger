@@ -10,27 +10,23 @@ Owlbear is a Python client that bridges **Athena** and **Trino** to **Polars** D
 
 - **Two backends**: `AthenaClient` (AWS Athena via boto3) and `TrinoClient` (direct Trino connection)
 - Shared Presto-family type conversion — both backends produce identically typed Polars DataFrames
+- Parameterized queries for safe value binding
+- Athena result reuse for repeated queries
 - Pagination support for large result sets (Athena) and row limits (both)
-- Comprehensive error handling and timeout management
 - Query cancellation and execution monitoring (Athena)
 - Built-in retry logic with exponential backoff (Athena)
 
 ## Installation
 
-### From GitHub (Git)
-
 ```bash
-# Core only (no backend)
-pip install git+https://github.com/jdonaldson/owlbear.git
-
 # With Athena backend
-pip install "owlbear[athena] @ git+https://github.com/jdonaldson/owlbear.git"
+pip install "owlbear[athena]"
 
 # With Trino backend
-pip install "owlbear[trino] @ git+https://github.com/jdonaldson/owlbear.git"
+pip install "owlbear[trino]"
 
 # Both backends
-pip install "owlbear[all] @ git+https://github.com/jdonaldson/owlbear.git"
+pip install "owlbear[all]"
 ```
 
 ### For Development
@@ -43,7 +39,7 @@ pip install -e ".[dev]"
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - **Athena**: AWS credentials configured (via AWS CLI, environment variables, or IAM roles) and an S3 bucket for query results
 - **Trino**: A running Trino cluster with network access
 
@@ -114,37 +110,31 @@ shape: (5, 4)
 
 ## Usage Examples
 
-### Basic Query Execution
+### Parameterized Queries
 
 ```python
-from owlbear import AthenaClient
-
-# Initialize client
-client = AthenaClient(
-    database="analytics_db",
-    output_location="s3://my-athena-results/queries/",
-    region="us-west-2"
+# Athena — parameters are passed as strings
+execution_id = client.query(
+    "SELECT * FROM orders WHERE customer_id = ?",
+    parameters=["1001"],
 )
+df = client.results(execution_id)
 
-# Execute query with automatic waiting
-query = """
-SELECT
-    customer_id,
-    SUM(order_amount) as total_spent,
-    COUNT(*) as order_count
-FROM orders
-WHERE order_date >= '2024-01-01'
-GROUP BY customer_id
-ORDER BY total_spent DESC
-LIMIT 50
-"""
+# Trino — parameters are passed as native Python values
+df = trino_client.query(
+    "SELECT * FROM orders WHERE customer_id = ?",
+    parameters=[1001],
+)
+```
 
-execution_id = client.query(query, wait_for_completion=True)
-results_df = client.results(execution_id)
+### Result Reuse (Athena)
 
-# Use Polars operations
-top_customers = results_df.filter(pl.col("total_spent") > 1000)
-print(f"Found {len(top_customers)} high-value customers")
+```python
+# Re-use cached results for up to 60 minutes
+execution_id = client.query(
+    "SELECT COUNT(*) FROM orders",
+    result_reuse_max_age=60,
+)
 ```
 
 ### Asynchronous Query Execution
@@ -168,22 +158,11 @@ df = client.results(execution_id)
 ### Using Work Groups
 
 ```python
-# Execute query with a specific work group
 execution_id = client.query(
     query="SELECT COUNT(*) FROM my_table",
     work_group="my-workgroup"
 )
 df = client.results(execution_id)
-```
-
-### Handling Large Result Sets
-
-```python
-# Get results with pagination (limit to 5000 rows)
-df = client.results(execution_id, max_rows=5000)
-
-# For larger datasets, consider using LIMIT in your SQL query
-# or processing results in chunks
 ```
 
 ### Using with Existing boto3 Session
@@ -192,26 +171,11 @@ df = client.results(execution_id, max_rows=5000)
 import boto3
 from owlbear import AthenaClient
 
-# Use existing session (useful for custom credential handling)
 session = boto3.Session(profile_name='my-profile')
 client = AthenaClient.from_session(
     session=session,
     database="my_db",
     output_location="s3://my-bucket/results/"
-)
-
-# Or with custom config
-from botocore.config import Config
-
-config = Config(
-    region_name='eu-west-1',
-    retries={'max_attempts': 5}
-)
-
-client = AthenaClient(
-    database="my_db",
-    output_location="s3://my-bucket/results/",
-    config=config
 )
 ```
 
@@ -220,66 +184,46 @@ client = AthenaClient(
 ```python
 # List available work groups
 work_groups = client.list_work_groups()
-print(f"Available work groups: {work_groups}")
 
 # Cancel a running query
 client.cancel_query(execution_id)
 
 # Get detailed query information
 query_info = client.get_query_info(execution_id)
-print(f"Query execution time: {query_info['Statistics']['TotalExecutionTimeInMillis']}ms")
+print(f"Execution time: {query_info['Statistics']['TotalExecutionTimeInMillis']}ms")
 print(f"Data processed: {query_info['Statistics']['DataProcessedInBytes']} bytes")
 ```
 
-### Error Handling
+## Type Mapping
 
-```python
-try:
-    execution_id = client.query("SELECT * FROM non_existent_table")
-    df = client.results(execution_id)
-except Exception as e:
-    if "Query failed" in str(e):
-        print(f"Query execution failed: {e}")
-    elif "timeout" in str(e).lower():
-        print(f"Query timed out: {e}")
-    else:
-        print(f"Unexpected error: {e}")
-```
+Owlbear automatically converts Presto/Trino/Athena SQL types to PyArrow (and then to Polars):
 
-## Advanced Usage
+| SQL Type | PyArrow Type |
+|---|---|
+| `boolean` | `bool_()` |
+| `tinyint` | `int8()` |
+| `smallint` | `int16()` |
+| `integer` | `int32()` |
+| `bigint` | `int64()` |
+| `real` / `float` | `float32()` |
+| `double` | `float64()` |
+| `decimal(p,s)` | `decimal128(p, s)` |
+| `varchar` / `char` / `string` | `string()` |
+| `varbinary` / `binary` | `binary()` |
+| `date` | `date32()` |
+| `timestamp` | `timestamp("us")` |
+| `timestamp with time zone` | `timestamp("us", tz="UTC")` |
+| `time` | `time64("us")` |
+| `interval day to second` | `duration("us")` |
+| `interval year to month` | `month_day_nano_interval()` |
+| `array<T>` | `list_(T)` |
+| `map<K,V>` | `map_(K, V)` |
 
-### Custom Query Context
-
-```python
-execution_id = client.query(
-    query="SELECT * FROM my_table",
-    query_context={"Catalog": "my_catalog"},
-    result_config={"EncryptionConfiguration": {"EncryptionOption": "SSE_S3"}}
-)
-```
-
-### Working with Different Data Types
-
-The library automatically handles various Athena data types using PyArrow for proper type inference:
-
-```python
-# Data types are automatically inferred and converted
-df = client.results(execution_id)
-
-# Check the inferred types
-print(df.dtypes)  # [Int32, Utf8, Float64, Boolean, Date32, etc.]
-
-# No manual casting needed for basic types, but you can still cast if needed
-df_modified = df.with_columns([
-    pl.col("timestamp_col").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"),
-])
-```
+Nested types like `array<array<integer>>` and `map<varchar,array<bigint>>` are fully supported.
 
 ## Configuration
 
 ### Environment Variables
-
-You can configure AWS credentials using standard environment variables:
 
 ```bash
 export AWS_ACCESS_KEY_ID=your_access_key
@@ -329,43 +273,20 @@ Your AWS credentials need the following permissions:
 
 ## Testing
 
-Run the test suite:
-
 ```bash
 pytest tests/ -v
 ```
 
-Run tests with coverage:
-
-```bash
-pytest tests/ --cov=src --cov-report=html
-```
-
 ## Development
-
-### Setup Development Environment
 
 ```bash
 git clone https://github.com/jdonaldson/owlbear.git
 cd owlbear
 pip install -e ".[dev]"
-```
 
-### Code Quality
-
-Format code:
-```bash
-black .
-```
-
-Lint code:
-```bash
-ruff check .
-```
-
-Type checking:
-```bash
-mypy src/
+black .        # format
+ruff check .   # lint
+mypy src/      # type check
 ```
 
 ## License
@@ -379,19 +300,3 @@ MIT License - see LICENSE file for details.
 3. Make your changes with tests
 4. Ensure all tests pass and code is formatted
 5. Submit a pull request
-
-## Changelog
-
-### v0.2.0
-- Add `TrinoClient` for direct Trino connections
-- Rename `OwlbearClient` → `AthenaClient` (alias kept for backward compat)
-- Extract shared `presto_type_to_pyarrow` type converter
-- Make `boto3` and `trino` optional extras (`[athena]`, `[trino]`, `[all]`)
-
-### v0.1.0 (2024-08-28)
-- Initial release
-- `AthenaClient` for executing Athena SQL and returning typed Polars DataFrames via PyArrow
-- Automatic Athena-to-PyArrow type mapping (integers, floats, decimals, timestamps, booleans, arrays, maps)
-- Paginated result retrieval with configurable row limits
-- Async query execution with exponential-backoff polling
-- Work group support, query cancellation, and execution monitoring

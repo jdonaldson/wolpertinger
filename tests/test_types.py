@@ -12,8 +12,10 @@ class TestBasicTypes:
         assert presto_type_to_pyarrow("bool") == pa.bool_()
         assert presto_type_to_pyarrow("BOOLEAN") == pa.bool_()
 
-    def test_small_integers(self):
-        assert presto_type_to_pyarrow("tinyint") == pa.int16()
+    def test_tinyint(self):
+        assert presto_type_to_pyarrow("tinyint") == pa.int8()
+
+    def test_smallint(self):
         assert presto_type_to_pyarrow("smallint") == pa.int16()
 
     def test_integer(self):
@@ -38,7 +40,17 @@ class TestBasicTypes:
 
     def test_timestamp(self):
         assert presto_type_to_pyarrow("timestamp") == pa.timestamp("us")
-        assert presto_type_to_pyarrow("timestamp with time zone") == pa.timestamp("us")
+
+    def test_timestamp_with_time_zone(self):
+        assert presto_type_to_pyarrow("timestamp with time zone") == pa.timestamp("us", tz="UTC")
+
+    def test_time(self):
+        assert presto_type_to_pyarrow("time") == pa.time64("us")
+        assert presto_type_to_pyarrow("time with time zone") == pa.time64("us")
+
+    def test_interval(self):
+        assert presto_type_to_pyarrow("interval day to second") == pa.duration("us")
+        assert presto_type_to_pyarrow("interval year to month") == pa.month_day_nano_interval()
 
 
 class TestDecimalTypes:
@@ -71,6 +83,14 @@ class TestStringTypes:
         assert presto_type_to_pyarrow("text") == pa.string()
 
 
+class TestBinaryTypes:
+    def test_varbinary(self):
+        assert presto_type_to_pyarrow("varbinary") == pa.binary()
+
+    def test_binary(self):
+        assert presto_type_to_pyarrow("binary") == pa.binary()
+
+
 class TestComplexTypes:
     def test_array_of_integers(self):
         result = presto_type_to_pyarrow("array<integer>")
@@ -80,13 +100,28 @@ class TestComplexTypes:
         result = presto_type_to_pyarrow("array<varchar>")
         assert result == pa.list_(pa.string())
 
-    def test_map(self):
+    def test_nested_array(self):
+        result = presto_type_to_pyarrow("array<array<integer>>")
+        assert result == pa.list_(pa.list_(pa.int32()))
+
+    def test_map_string_string(self):
         result = presto_type_to_pyarrow("map<varchar,varchar>")
         assert result == pa.map_(pa.string(), pa.string())
+
+    def test_map_string_bigint(self):
+        result = presto_type_to_pyarrow("map<varchar,bigint>")
+        assert result == pa.map_(pa.string(), pa.int64())
+
+    def test_map_with_complex_value(self):
+        result = presto_type_to_pyarrow("map<varchar,array<integer>>")
+        assert result == pa.map_(pa.string(), pa.list_(pa.int32()))
+
+    def test_array_of_map(self):
+        result = presto_type_to_pyarrow("array<map<varchar,integer>>")
+        assert result == pa.list_(pa.map_(pa.string(), pa.int32()))
 
 
 class TestUnknownTypes:
     def test_unknown_defaults_to_string(self):
         assert presto_type_to_pyarrow("json") == pa.string()
-        assert presto_type_to_pyarrow("varbinary") == pa.string()
         assert presto_type_to_pyarrow("ipaddress") == pa.string()

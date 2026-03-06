@@ -5,7 +5,7 @@ import boto3
 import polars as pl
 import pyarrow as pa
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from botocore.config import Config
 
 from .types import presto_type_to_pyarrow
@@ -43,9 +43,22 @@ class AthenaClient:
         wait_for_completion: bool = True,
         work_group: Optional[str] = None,
         query_context: Optional[Dict[str, str]] = None,
-        result_config: Optional[Dict[str, Any]] = None
+        result_config: Optional[Dict[str, Any]] = None,
+        parameters: Optional[List[str]] = None,
+        result_reuse_max_age: Optional[int] = None,
     ) -> str:
-        """Execute a query and return the execution ID"""
+        """Execute a query and return the execution ID.
+
+        Args:
+            query: SQL query string.
+            wait_for_completion: Block until the query finishes.
+            work_group: Athena workgroup name.
+            query_context: Extra context key/values (merged with Database).
+            result_config: Extra result-configuration key/values.
+            parameters: Parameterized query execution parameters.
+            result_reuse_max_age: If set, enable result reuse for this many
+                minutes via ``ResultReuseConfiguration``.
+        """
         # Build query execution context
         context = {'Database': self.database}
         if query_context:
@@ -57,14 +70,25 @@ class AthenaClient:
             config.update(result_config)
 
         # Prepare execution parameters
-        params = {
+        params: Dict[str, Any] = {
             'QueryString': query,
             'QueryExecutionContext': context,
-            'ResultConfiguration': config
+            'ResultConfiguration': config,
         }
 
         if work_group:
             params['WorkGroup'] = work_group
+
+        if parameters is not None:
+            params['ExecutionParameters'] = parameters
+
+        if result_reuse_max_age is not None:
+            params['ResultReuseConfiguration'] = {
+                'ResultReuseByAgeConfiguration': {
+                    'Enabled': True,
+                    'MaxAgeInMinutes': result_reuse_max_age,
+                }
+            }
 
         try:
             response = self.client.start_query_execution(**params)
@@ -76,7 +100,7 @@ class AthenaClient:
             return execution_id
 
         except Exception as e:
-            raise Exception(f"Failed to execute query: {str(e)}")
+            raise Exception(f"Failed to execute query: {e}") from e
 
     def _wait_for_completion(self, execution_id: str, max_wait_time: int = 300):
         """Wait for query to complete with exponential backoff"""
@@ -105,7 +129,7 @@ class AthenaClient:
                 if "Query failed:" in str(e) or "Query was cancelled" in str(e):
                     raise  # Re-raise our own exceptions
                 elif "InvalidRequestException" in str(type(e)) or "InvalidRequestException" in str(e):
-                    raise Exception(f"Invalid query execution ID: {execution_id}")
+                    raise Exception(f"Invalid query execution ID: {execution_id}") from e
                 else:
                     # For any other exception, continue the loop or re-raise
                     break
@@ -197,7 +221,7 @@ class AthenaClient:
             return pl.from_arrow(table)
 
         except Exception as e:
-            raise Exception(f"Failed to retrieve query results: {str(e)}")
+            raise Exception(f"Failed to retrieve query results: {e}") from e
 
     def _extract_typed_value(self, col_data: Dict[str, Any], athena_type: str) -> Any:
         """Extract and convert value based on Athena type"""
@@ -219,7 +243,17 @@ class AthenaClient:
         # Convert based on type
         athena_type = athena_type.lower()
 
-        if not raw_value or raw_value == '':
+        # For string-like types, preserve empty strings as-is
+        is_string_type = (
+            athena_type.startswith("varchar")
+            or athena_type.startswith("char")
+            or athena_type in ("string", "text")
+        )
+
+        if not raw_value and raw_value != '':
+            return None
+
+        if not is_string_type and raw_value == '':
             return None
 
         try:
@@ -244,7 +278,7 @@ class AthenaClient:
             response = self.client.get_query_execution(QueryExecutionId=execution_id)
             return response['QueryExecution']
         except Exception as e:
-            raise Exception(f"Failed to get query info: {str(e)}")
+            raise Exception(f"Failed to get query info: {e}") from e
 
     def cancel_query(self, execution_id: str) -> bool:
         """Cancel a running query"""
@@ -252,7 +286,7 @@ class AthenaClient:
             self.client.stop_query_execution(QueryExecutionId=execution_id)
             return True
         except Exception as e:
-            raise Exception(f"Failed to cancel query: {str(e)}")
+            raise Exception(f"Failed to cancel query: {e}") from e
 
     def list_work_groups(self) -> list:
         """List available Athena work groups"""
@@ -260,7 +294,7 @@ class AthenaClient:
             response = self.client.list_work_groups()
             return [wg['Name'] for wg in response['WorkGroups']]
         except Exception as e:
-            raise Exception(f"Failed to list work groups: {str(e)}")
+            raise Exception(f"Failed to list work groups: {e}") from e
 
     @classmethod
     def from_session(cls, session: boto3.Session, database: str, output_location: str, **kwargs):

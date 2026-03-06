@@ -136,8 +136,54 @@ class TestExecuteQuery:
         client, mock_athena = athena_client
         mock_athena.start_query_execution.side_effect = Exception("AWS Error")
 
-        with pytest.raises(Exception, match="Failed to execute query: AWS Error"):
+        with pytest.raises(Exception, match="Failed to execute query"):
             client.query("SELECT * FROM test_table")
+
+    def test_query_with_parameters(self, athena_client):
+        """Test parameterized query execution"""
+        client, mock_athena = athena_client
+        mock_athena.start_query_execution.return_value = {'QueryExecutionId': 'test-id'}
+        mock_athena.get_query_execution.return_value = {
+            'QueryExecution': {'Status': {'State': 'SUCCEEDED'}}
+        }
+
+        client.query(
+            "SELECT * FROM t WHERE id = ?",
+            parameters=["42"],
+        )
+
+        call_args = mock_athena.start_query_execution.call_args[1]
+        assert call_args['ExecutionParameters'] == ["42"]
+
+    def test_query_with_result_reuse(self, athena_client):
+        """Test query with result reuse configuration"""
+        client, mock_athena = athena_client
+        mock_athena.start_query_execution.return_value = {'QueryExecutionId': 'test-id'}
+        mock_athena.get_query_execution.return_value = {
+            'QueryExecution': {'Status': {'State': 'SUCCEEDED'}}
+        }
+
+        client.query("SELECT * FROM t", result_reuse_max_age=60)
+
+        call_args = mock_athena.start_query_execution.call_args[1]
+        reuse_config = call_args['ResultReuseConfiguration']
+        assert reuse_config == {
+            'ResultReuseByAgeConfiguration': {
+                'Enabled': True,
+                'MaxAgeInMinutes': 60,
+            }
+        }
+
+    def test_query_exception_chaining(self, athena_client):
+        """Test that exceptions are chained with 'from e'"""
+        client, mock_athena = athena_client
+        original = ValueError("original error")
+        mock_athena.start_query_execution.side_effect = original
+
+        with pytest.raises(Exception) as exc_info:
+            client.query("SELECT 1")
+
+        assert exc_info.value.__cause__ is original
 
 
 class TestWaitForCompletion:
@@ -327,8 +373,48 @@ class TestGetResultsPolars:
         client, mock_athena = athena_client
         mock_athena.get_query_results.side_effect = Exception("AWS Error")
 
-        with pytest.raises(Exception, match="Failed to retrieve query results: AWS Error"):
+        with pytest.raises(Exception, match="Failed to retrieve query results"):
             client.results('test-id')
+
+    def test_results_exception_chaining(self, athena_client):
+        """Test that results exceptions are chained"""
+        client, mock_athena = athena_client
+        original = RuntimeError("network error")
+        mock_athena.get_query_results.side_effect = original
+
+        with pytest.raises(Exception) as exc_info:
+            client.results('test-id')
+
+        assert exc_info.value.__cause__ is original
+
+
+class TestExtractTypedValue:
+    """Test _extract_typed_value preserves empty strings for string types"""
+
+    def test_empty_string_preserved_for_varchar(self, athena_client):
+        client, _ = athena_client
+        result = client._extract_typed_value({'VarCharValue': ''}, 'varchar')
+        assert result == ''
+
+    def test_empty_string_preserved_for_string(self, athena_client):
+        client, _ = athena_client
+        result = client._extract_typed_value({'VarCharValue': ''}, 'string')
+        assert result == ''
+
+    def test_empty_string_preserved_for_char(self, athena_client):
+        client, _ = athena_client
+        result = client._extract_typed_value({'VarCharValue': ''}, 'char(10)')
+        assert result == ''
+
+    def test_empty_string_null_for_integer(self, athena_client):
+        client, _ = athena_client
+        result = client._extract_typed_value({'VarCharValue': ''}, 'integer')
+        assert result is None
+
+    def test_empty_string_null_for_double(self, athena_client):
+        client, _ = athena_client
+        result = client._extract_typed_value({'VarCharValue': ''}, 'double')
+        assert result is None
 
 
 class TestQueryInfo:
@@ -353,7 +439,7 @@ class TestQueryInfo:
         client, mock_athena = athena_client
         mock_athena.get_query_execution.side_effect = Exception("AWS Error")
 
-        with pytest.raises(Exception, match="Failed to get query info: AWS Error"):
+        with pytest.raises(Exception, match="Failed to get query info"):
             client.get_query_info('test-id')
 
 
@@ -373,7 +459,7 @@ class TestCancelQuery:
         client, mock_athena = athena_client
         mock_athena.stop_query_execution.side_effect = Exception("AWS Error")
 
-        with pytest.raises(Exception, match="Failed to cancel query: AWS Error"):
+        with pytest.raises(Exception, match="Failed to cancel query"):
             client.cancel_query('test-id')
 
 
@@ -400,5 +486,5 @@ class TestListWorkGroups:
         client, mock_athena = athena_client
         mock_athena.list_work_groups.side_effect = Exception("AWS Error")
 
-        with pytest.raises(Exception, match="Failed to list work groups: AWS Error"):
+        with pytest.raises(Exception, match="Failed to list work groups"):
             client.list_work_groups()

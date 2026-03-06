@@ -172,6 +172,25 @@ class TestTrinoExecuteQuery:
 
         mock_connection.close.assert_called_once()
 
+    def test_query_with_parameters(self, trino_client, mock_connection, mock_cursor):
+        """Test parameterized query execution"""
+        mock_cursor.description = [
+            ("id", "integer", None, None, None, None, None),
+        ]
+        mock_cursor.fetchall.return_value = [(42,)]
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            df = trino_client.query(
+                "SELECT id FROM t WHERE id = ?",
+                parameters=[42],
+            )
+
+        mock_cursor.execute.assert_called_once_with(
+            "SELECT id FROM t WHERE id = ?", params=[42]
+        )
+        assert len(df) == 1
+        assert df.item(0, "id") == 42
+
 
 class TestTrinoGetConnection:
     def test_get_connection_params(self):
