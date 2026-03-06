@@ -1,6 +1,7 @@
 # owlbear
 
 <img src="owlbear.png" width="150" align="right" alt="Owlbear" />
+
 **Feathers and claws for your data lake.**
 
 Owlbear is a Python client that bridges **Athena** and **Trino** to **Polars** DataFrames via PyArrow. A wise chimera — part **Owl** ([Athena](https://aws.amazon.com/athena/), goddess of wisdom), part **Bear** ([Polars](https://pola.rs/), the bear constellation). Query your data lake with SQL, get back fast, typed DataFrames — no serialization or ODBC overhead.
