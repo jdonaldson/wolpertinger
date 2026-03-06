@@ -1,7 +1,7 @@
-# Claude Instructions for athena-polars
+# Claude Instructions for owlbear
 
 ## Project Overview
-This is a Python library for working with AWS Athena using Polars for data processing.
+Owlbear is a Python client that bridges AWS Athena and Polars. It executes Athena SQL queries and returns results as typed Polars DataFrames via PyArrow. Named for its two halves: Owl (Athena) + Bear (Polars).
 
 ## Development Guidelines
 - Use Polars for all data processing operations
@@ -10,7 +10,7 @@ This is a Python library for working with AWS Athena using Polars for data proce
 
 ## Dependencies
 - polars: Core data processing library
-- boto3: AWS SDK for Athena integration  
+- boto3: AWS SDK for Athena integration
 
 ## Development Dependencies
 - pytest: Testing framework

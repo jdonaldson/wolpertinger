@@ -1,6 +1,10 @@
-# athena-polars
+# owlbear
 
-A Python library for executing AWS Athena queries and returning results as Polars DataFrames.
+<img src="owlbear.png" width="200" align="right" />
+
+**Feathers and claws for your data lake.**
+
+Owlbear is a Python client that connects AWS Athena to Polars DataFrames. A wise chimera — part **Owl** ([Athena](https://aws.amazon.com/athena/), goddess of wisdom), part **Bear** ([Polars](https://pola.rs/), the bear constellation). Query your data lake with SQL, get back fast, typed DataFrames — no pandas tax.
 
 ## Features
 
@@ -13,17 +17,17 @@ A Python library for executing AWS Athena queries and returning results as Polar
 
 ## Installation
 
-### From Bitbucket (Git)
+### From GitHub (Git)
 
 ```bash
-pip install git+https://bitbucket.org/curvoproductengineers/athena-polars.git
+pip install git+https://github.com/jdonaldson/owlbear.git
 ```
 
 ### For Development
 
 ```bash
-git clone https://bitbucket.org/curvoproductengineers/athena-polars.git
-cd athena-polars
+git clone https://github.com/jdonaldson/owlbear.git
+cd owlbear
 pip install -e ".[dev]"
 ```
 
@@ -37,10 +41,10 @@ pip install -e ".[dev]"
 
 ```python
 import polars as pl
-from athena_polars import AthenaClient
+from owlbear import OwlbearClient
 
 # Initialize the client
-client = AthenaClient(
+client = OwlbearClient(
     database="my_database",
     output_location="s3://my-bucket/athena-results/",
     region="us-east-1"
@@ -59,10 +63,10 @@ print(df.head())
 ### Basic Query Execution
 
 ```python
-from athena_polars import AthenaClient
+from owlbear import OwlbearClient
 
 # Initialize client
-client = AthenaClient(
+client = OwlbearClient(
     database="analytics_db",
     output_location="s3://my-athena-results/queries/",
     region="us-west-2"
@@ -70,11 +74,11 @@ client = AthenaClient(
 
 # Execute query with automatic waiting
 query = """
-SELECT 
+SELECT
     customer_id,
     SUM(order_amount) as total_spent,
     COUNT(*) as order_count
-FROM orders 
+FROM orders
 WHERE order_date >= '2024-01-01'
 GROUP BY customer_id
 ORDER BY total_spent DESC
@@ -94,7 +98,7 @@ print(f"Found {len(top_customers)} high-value customers")
 ```python
 # Start query without waiting
 execution_id = client.execute_query(
-    "SELECT * FROM large_table", 
+    "SELECT * FROM large_table",
     wait_for_completion=False
 )
 
@@ -132,11 +136,11 @@ df = client.get_results_polars(execution_id, max_rows=5000)
 
 ```python
 import boto3
-from athena_polars import AthenaClient
+from owlbear import OwlbearClient
 
 # Use existing session (useful for custom credential handling)
 session = boto3.Session(profile_name='my-profile')
-client = AthenaClient.from_session(
+client = OwlbearClient.from_session(
     session=session,
     database="my_db",
     output_location="s3://my-bucket/results/"
@@ -150,7 +154,7 @@ config = Config(
     retries={'max_attempts': 5}
 )
 
-client = AthenaClient(
+client = OwlbearClient(
     database="my_db",
     output_location="s3://my-bucket/results/",
     config=config
@@ -288,8 +292,8 @@ pytest tests/ --cov=src --cov-report=html
 ### Setup Development Environment
 
 ```bash
-git clone https://bitbucket.org/curvoproductengineers/athena-polars.git
-cd athena-polars
+git clone https://github.com/jdonaldson/owlbear.git
+cd owlbear
 pip install -e ".[dev]"
 ```
 
@@ -316,7 +320,7 @@ MIT License - see LICENSE file for details.
 
 ## Contributing
 
-1. Fork the repository on Bitbucket
+1. Fork the repository on GitHub
 2. Create a feature branch
 3. Make your changes with tests
 4. Ensure all tests pass and code is formatted
@@ -326,8 +330,8 @@ MIT License - see LICENSE file for details.
 
 ### v0.1.0 (2024-08-28)
 - Initial release
-- AthenaClient with Polars DataFrame integration
-- Support for query execution, result retrieval, and pagination
-- Comprehensive test suite
-- Error handling and timeout management
-- Work group support
+- `OwlbearClient` for executing Athena SQL and returning typed Polars DataFrames via PyArrow
+- Automatic Athena-to-PyArrow type mapping (integers, floats, decimals, timestamps, booleans, arrays, maps)
+- Paginated result retrieval with configurable row limits
+- Async query execution with exponential-backoff polling
+- Work group support, query cancellation, and execution monitoring

@@ -3,10 +3,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "athena-polars"
+name = "owlbear"
 version = "0.1.0"
-description = "A library for working with AWS Athena using Polars"
-authors = [{name = "J. Justin Donaldson", email = "justin_donaldson@curvolabs.com"}]
+description = "Feathers and claws for your data lake"
+authors = [{name = "J. Justin Donaldson", email = "jjd@jjd.io"}]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.8"
@@ -32,9 +32,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jdonaldson/athena-polars"
-Repository = "https://github.com/jdonaldson/athena-polars"
-Issues = "https://github.com/jdonaldson/athena-polars/issues"
+Homepage = "https://github.com/jdonaldson/owlbear"
+Repository = "https://github.com/jdonaldson/owlbear"
+Issues = "https://github.com/jdonaldson/owlbear/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -53,7 +53,7 @@ target-version = "py38"
 line-length = 88
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/athena_polars"]
+packages = ["src/owlbear"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
