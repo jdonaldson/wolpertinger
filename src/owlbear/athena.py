@@ -5,7 +5,7 @@ import boto3
 import polars as pl
 import pyarrow as pa
 import time
-from typing import Optional, Any, cast
+from typing import Iterator, Optional, Any, cast
 from botocore.config import Config
 
 from .types import presto_type_to_pyarrow
@@ -240,6 +240,77 @@ class AthenaClient:
             # Create table and convert to Polars
             table = pa.table(arrays, names=[field.name for field in schema])
             return cast(pl.DataFrame, pl.from_arrow(table))
+
+        except Exception as e:
+            raise Exception(f"Failed to retrieve query results: {e}") from e
+
+    def results_iter(self, execution_id: str, page_size: int = 1000) -> Iterator[pl.DataFrame]:
+        """Yield query results page-by-page as Polars DataFrames.
+
+        Args:
+            execution_id: The query execution ID.
+            page_size: Rows per page (capped at 1000, the Athena API limit).
+
+        Yields:
+            One ``pl.DataFrame`` per API page.
+        """
+        page_size = min(page_size, 1000)
+
+        try:
+            # First page – extract schema and skip header row
+            response = self.client.get_query_results(
+                QueryExecutionId=execution_id, MaxResults=page_size
+            )
+
+            result_set = response["ResultSet"]
+            column_info = result_set["ResultSetMetadata"]["ColumnInfo"]
+
+            # Build PyArrow schema (reused for every page)
+            schema_fields = []
+            for col in column_info:
+                pa_type = presto_type_to_pyarrow(col["Type"])
+                schema_fields.append(pa.field(col["Name"], pa_type))
+            schema = pa.schema(schema_fields)
+
+            # First batch skips the header row
+            data_rows = result_set["Rows"][1:] if result_set["Rows"] else []
+
+            while True:
+                if data_rows:
+                    columns_data = {col["Name"]: [] for col in column_info}
+                    for row in data_rows:
+                        for i, col_data in enumerate(row["Data"]):
+                            col_name = column_info[i]["Name"]
+                            col_type = column_info[i]["Type"]
+                            value = self._extract_typed_value(col_data, col_type)
+                            columns_data[col_name].append(value)
+
+                    arrays = []
+                    for field in schema:
+                        data = columns_data[field.name]
+                        try:
+                            array = pa.array(data, type=field.type)
+                        except (pa.ArrowInvalid, pa.ArrowTypeError):
+                            array = pa.array(
+                                [str(x) if x is not None else None for x in data],
+                                type=pa.string(),
+                            )
+                        arrays.append(array)
+
+                    table = pa.table(arrays, names=[field.name for field in schema])
+                    yield cast(pl.DataFrame, pl.from_arrow(table))
+
+                next_token = response.get("NextToken")
+                if not next_token:
+                    break
+
+                response = self.client.get_query_results(
+                    QueryExecutionId=execution_id,
+                    MaxResults=page_size,
+                    NextToken=next_token,
+                )
+                result_set = response["ResultSet"]
+                data_rows = result_set["Rows"]
 
         except Exception as e:
             raise Exception(f"Failed to retrieve query results: {e}") from e

@@ -417,6 +417,119 @@ class TestExtractTypedValue:
         assert result is None
 
 
+class TestResultsIter:
+    """Test results_iter method"""
+
+    def test_single_page(self, athena_client):
+        """Single page, no NextToken — yields one DataFrame"""
+        client, mock_athena = athena_client
+
+        mock_athena.get_query_results.return_value = {
+            'ResultSet': {
+                'ResultSetMetadata': {
+                    'ColumnInfo': [
+                        {'Name': 'id', 'Type': 'integer'},
+                        {'Name': 'name', 'Type': 'varchar'},
+                    ]
+                },
+                'Rows': [
+                    {'Data': [{'VarCharValue': 'id'}, {'VarCharValue': 'name'}]},
+                    {'Data': [{'VarCharValue': '1'}, {'VarCharValue': 'Alice'}]},
+                    {'Data': [{'VarCharValue': '2'}, {'VarCharValue': 'Bob'}]},
+                ]
+            }
+        }
+
+        pages = list(client.results_iter('test-id'))
+
+        assert len(pages) == 1
+        df = pages[0]
+        assert df.columns == ['id', 'name']
+        assert len(df) == 2
+        assert df.item(0, 'id') == 1
+        assert df.item(1, 'name') == 'Bob'
+
+    def test_multi_page(self, athena_client):
+        """Multiple pages via NextToken"""
+        client, mock_athena = athena_client
+
+        first_response = {
+            'ResultSet': {
+                'ResultSetMetadata': {
+                    'ColumnInfo': [{'Name': 'id', 'Type': 'integer'}]
+                },
+                'Rows': [
+                    {'Data': [{'VarCharValue': 'id'}]},
+                    {'Data': [{'VarCharValue': '1'}]},
+                ]
+            },
+            'NextToken': 'token123',
+        }
+        second_response = {
+            'ResultSet': {
+                'Rows': [
+                    {'Data': [{'VarCharValue': '2'}]},
+                ]
+            },
+        }
+
+        mock_athena.get_query_results.side_effect = [first_response, second_response]
+
+        pages = list(client.results_iter('test-id'))
+
+        assert len(pages) == 2
+        assert pages[0].item(0, 'id') == 1
+        assert pages[1].item(0, 'id') == 2
+        assert mock_athena.get_query_results.call_count == 2
+
+    def test_page_size_capped_at_1000(self, athena_client):
+        """page_size > 1000 is capped to 1000"""
+        client, mock_athena = athena_client
+
+        mock_athena.get_query_results.return_value = {
+            'ResultSet': {
+                'ResultSetMetadata': {
+                    'ColumnInfo': [{'Name': 'id', 'Type': 'integer'}]
+                },
+                'Rows': [
+                    {'Data': [{'VarCharValue': 'id'}]},
+                    {'Data': [{'VarCharValue': '1'}]},
+                ]
+            }
+        }
+
+        list(client.results_iter('test-id', page_size=5000))
+
+        call_args = mock_athena.get_query_results.call_args[1]
+        assert call_args['MaxResults'] == 1000
+
+    def test_empty_results(self, athena_client):
+        """Only header row — yields nothing"""
+        client, mock_athena = athena_client
+
+        mock_athena.get_query_results.return_value = {
+            'ResultSet': {
+                'ResultSetMetadata': {
+                    'ColumnInfo': [{'Name': 'id', 'Type': 'integer'}]
+                },
+                'Rows': [
+                    {'Data': [{'VarCharValue': 'id'}]},
+                ]
+            }
+        }
+
+        pages = list(client.results_iter('test-id'))
+        assert len(pages) == 0
+
+    def test_error_handling(self, athena_client):
+        """Errors are wrapped consistently"""
+        client, mock_athena = athena_client
+        mock_athena.get_query_results.side_effect = Exception("AWS Error")
+
+        with pytest.raises(Exception, match="Failed to retrieve query results"):
+            list(client.results_iter('test-id'))
+
+
 class TestQueryInfo:
     """Test get_query_info method"""
 

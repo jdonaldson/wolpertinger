@@ -4,7 +4,7 @@
 import polars as pl
 import pyarrow as pa
 from collections.abc import Sequence
-from typing import Optional, Any, cast
+from typing import Iterator, Optional, Any, cast
 
 from .types import presto_type_to_pyarrow
 
@@ -123,5 +123,65 @@ class TrinoClient:
 
             table = pa.table(arrays, names=col_names)
             return cast(pl.DataFrame, pl.from_arrow(table))
+        finally:
+            conn.close()
+
+    def query_iter(
+        self,
+        query: str,
+        page_size: int = 1000,
+        parameters: Optional[Sequence[Any]] = None,
+    ) -> Iterator[pl.DataFrame]:
+        """Execute a query and yield results page-by-page as Polars DataFrames.
+
+        Args:
+            query: SQL query string.
+            page_size: Rows per ``fetchmany`` call.
+            parameters: Query parameters passed to ``cursor.execute``.
+
+        Yields:
+            One ``pl.DataFrame`` per batch.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, params=parameters)
+
+            description = cursor.description
+            if not description:
+                return
+
+            col_names = [desc[0] for desc in description]
+            col_types = [desc[1] for desc in description]
+
+            # Build PyArrow schema (reused for every page)
+            schema_fields = []
+            for name, type_str in zip(col_names, col_types):
+                pa_type = presto_type_to_pyarrow(type_str) if type_str else pa.string()
+                schema_fields.append(pa.field(name, pa_type))
+            arrow_schema = pa.schema(schema_fields)
+
+            while True:
+                rows = cursor.fetchmany(page_size)
+                if not rows:
+                    break
+
+                columns_data = list(zip(*rows))
+
+                arrays = []
+                for i, (name, type_str) in enumerate(zip(col_names, col_types)):
+                    pa_type = presto_type_to_pyarrow(type_str) if type_str else pa.string()
+                    data = list(columns_data[i])
+                    try:
+                        array = pa.array(data, type=pa_type)
+                    except (pa.ArrowInvalid, pa.ArrowTypeError):
+                        array = pa.array(
+                            [str(x) if x is not None else None for x in data],
+                            type=pa.string(),
+                        )
+                    arrays.append(array)
+
+                table = pa.table(arrays, names=col_names)
+                yield cast(pl.DataFrame, pl.from_arrow(table))
         finally:
             conn.close()

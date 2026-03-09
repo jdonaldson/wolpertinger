@@ -192,6 +192,103 @@ class TestTrinoExecuteQuery:
         assert df.item(0, "id") == 42
 
 
+class TestQueryIter:
+    """Test query_iter method"""
+
+    def test_single_batch(self, trino_client, mock_connection, mock_cursor):
+        """One batch of rows then exhausted"""
+        mock_cursor.description = [
+            ("id", "integer", None, None, None, None, None),
+            ("name", "varchar", None, None, None, None, None),
+        ]
+        mock_cursor.fetchmany.side_effect = [
+            [(1, "Alice"), (2, "Bob")],
+            [],
+        ]
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            pages = list(trino_client.query_iter("SELECT id, name FROM users"))
+
+        assert len(pages) == 1
+        df = pages[0]
+        assert df.columns == ["id", "name"]
+        assert len(df) == 2
+        assert df.item(0, "id") == 1
+        assert df.item(1, "name") == "Bob"
+        mock_connection.close.assert_called_once()
+
+    def test_multi_batch(self, trino_client, mock_connection, mock_cursor):
+        """Multiple batches via fetchmany"""
+        mock_cursor.description = [
+            ("id", "integer", None, None, None, None, None),
+        ]
+        mock_cursor.fetchmany.side_effect = [
+            [(1,), (2,)],
+            [(3,)],
+            [],
+        ]
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            pages = list(trino_client.query_iter("SELECT id FROM t", page_size=2))
+
+        assert len(pages) == 2
+        assert pages[0].item(0, "id") == 1
+        assert pages[0].item(1, "id") == 2
+        assert pages[1].item(0, "id") == 3
+
+    def test_empty_results(self, trino_client, mock_connection, mock_cursor):
+        """fetchmany returns empty on first call"""
+        mock_cursor.description = [
+            ("id", "integer", None, None, None, None, None),
+        ]
+        mock_cursor.fetchmany.return_value = []
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            pages = list(trino_client.query_iter("SELECT id FROM empty_table"))
+
+        assert len(pages) == 0
+        mock_connection.close.assert_called_once()
+
+    def test_no_description(self, trino_client, mock_connection, mock_cursor):
+        """DDL with no description yields nothing"""
+        mock_cursor.description = None
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            pages = list(trino_client.query_iter("CREATE TABLE foo (id INT)"))
+
+        assert len(pages) == 0
+        mock_connection.close.assert_called_once()
+
+    def test_connection_closed_on_error(self, trino_client, mock_connection, mock_cursor):
+        """Connection is closed even when execute raises"""
+        mock_cursor.execute.side_effect = Exception("Connection failed")
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            with pytest.raises(Exception, match="Connection failed"):
+                list(trino_client.query_iter("SELECT 1"))
+
+        mock_connection.close.assert_called_once()
+
+    def test_query_with_parameters(self, trino_client, mock_connection, mock_cursor):
+        """Parameters are forwarded to cursor.execute"""
+        mock_cursor.description = [
+            ("id", "integer", None, None, None, None, None),
+        ]
+        mock_cursor.fetchmany.side_effect = [[(42,)], []]
+
+        with patch.object(trino_client, "_get_connection", return_value=mock_connection):
+            pages = list(trino_client.query_iter(
+                "SELECT id FROM t WHERE id = ?",
+                parameters=[42],
+            ))
+
+        mock_cursor.execute.assert_called_once_with(
+            "SELECT id FROM t WHERE id = ?", params=[42]
+        )
+        assert len(pages) == 1
+        assert pages[0].item(0, "id") == 42
+
+
 class TestTrinoGetConnection:
     def test_get_connection_params(self):
         auth = Mock()
