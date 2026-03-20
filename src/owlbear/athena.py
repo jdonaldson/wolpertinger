@@ -21,6 +21,14 @@ class AthenaClient:
         config: Optional[Config] = None,
         **client_kwargs,
     ):
+        # Store init params for lazy S3 client creation
+        self._session = session
+        self._region = region
+        self._config = config
+        self._client_kwargs = client_kwargs
+        self._s3_client: Optional[Any] = None
+        self._last_query_execution: Optional[dict[str, Any]] = None
+
         # Use provided session or create new one
         if session:
             self.client = session.client("athena", config=config, **client_kwargs)
@@ -36,6 +44,36 @@ class AthenaClient:
 
         self.database = database
         self.output_location = output_location
+
+    @property
+    def _s3(self):
+        """Lazy S3 client, reusing the same session/credentials as the Athena client."""
+        if self._s3_client is None:
+            if self._session:
+                self._s3_client = self._session.client(
+                    "s3", config=self._config, **self._client_kwargs
+                )
+            else:
+                default_config = Config(
+                    region_name=self._region,
+                    retries={"max_attempts": 3, "mode": "adaptive"},
+                )
+                final_config = self._config or default_config
+                self._s3_client = boto3.client(
+                    "s3", config=final_config, **self._client_kwargs
+                )
+        return self._s3_client
+
+    @staticmethod
+    def _parse_s3_uri(uri: str) -> tuple[str, str]:
+        """Split ``s3://bucket/key/path`` into ``("bucket", "key/path")``."""
+        if not uri.startswith("s3://"):
+            raise ValueError(f"Not an S3 URI: {uri}")
+        path = uri[5:]  # strip "s3://"
+        bucket, _, key = path.partition("/")
+        if not bucket:
+            raise ValueError(f"Invalid S3 URI (no bucket): {uri}")
+        return bucket, key
 
     def query(
         self,
@@ -127,6 +165,8 @@ class AthenaClient:
                         raise Exception(f"Query failed: {reason}. Error: {error_msg}")
                     elif status == "CANCELLED":
                         raise Exception("Query was cancelled")
+                    # Cache the full QueryExecution for later S3 path lookup
+                    self._last_query_execution = response["QueryExecution"]
                     return status
 
                 time.sleep(sleep_time)
@@ -148,8 +188,97 @@ class AthenaClient:
 
         raise TimeoutError(f"Query did not complete within {max_wait_time} seconds")
 
+    def _get_column_schema(self, execution_id: str) -> pa.Schema:
+        """Fetch column metadata via a single get_query_results call."""
+        response = self.client.get_query_results(
+            QueryExecutionId=execution_id, MaxResults=1
+        )
+        column_info = response["ResultSet"]["ResultSetMetadata"]["ColumnInfo"]
+        fields = []
+        for col in column_info:
+            pa_type = presto_type_to_pyarrow(col["Type"])
+            fields.append(pa.field(col["Name"], pa_type))
+        return pa.schema(fields)
+
+    def _read_csv_from_s3(self, s3_uri: str) -> bytes:
+        """Download CSV bytes from S3."""
+        bucket, key = self._parse_s3_uri(s3_uri)
+        response = self._s3.get_object(Bucket=bucket, Key=key)
+        return response["Body"].read()
+
+    def _csv_to_dataframe(self, csv_bytes: bytes, schema: pa.Schema) -> pl.DataFrame:
+        """Read CSV bytes into a typed Polars DataFrame using a PyArrow schema."""
+        # Read all columns as strings, then cast via PyArrow for type fidelity
+        col_names = [f.name for f in schema]
+        df_raw = pl.read_csv(csv_bytes, has_header=True, infer_schema=False)
+        # Athena CSV header names should match, but use positional rename for safety
+        if df_raw.columns != col_names:
+            df_raw.columns = col_names
+        arrays = []
+        for field in schema:
+            col = df_raw.get_column(field.name)
+            try:
+                arrow_arr = pa.array(col.to_list(), type=field.type, from_pandas=True)
+            except (pa.ArrowInvalid, pa.ArrowTypeError, pa.ArrowNotImplementedError):
+                arrow_arr = pa.array(col.to_list(), type=pa.string())
+            arrays.append(arrow_arr)
+        table = pa.table(arrays, schema=schema)
+        return cast(pl.DataFrame, pl.from_arrow(table))
+
+    def _results_from_s3(
+        self, execution_id: str, s3_uri: str, max_rows: int = 0
+    ) -> pl.DataFrame:
+        """Read CSV results directly from S3 with Athena type metadata.
+
+        Args:
+            execution_id: Query execution ID (for schema lookup).
+            s3_uri: Full ``s3://bucket/key`` path to the CSV file.
+            max_rows: Limit rows returned (0 = all rows).
+        """
+        schema = self._get_column_schema(execution_id)
+        csv_bytes = self._read_csv_from_s3(s3_uri)
+        df = self._csv_to_dataframe(csv_bytes, schema)
+        if max_rows > 0:
+            df = df.head(max_rows)
+        return df
+
+    def _results_iter_from_s3(
+        self, execution_id: str, s3_uri: str, page_size: int = 1000
+    ) -> Iterator[pl.DataFrame]:
+        """Read CSV results from S3 and yield in batches.
+
+        Args:
+            execution_id: Query execution ID (for schema lookup).
+            s3_uri: Full ``s3://bucket/key`` path to the CSV file.
+            page_size: Rows per batch.
+        """
+        schema = self._get_column_schema(execution_id)
+        csv_bytes = self._read_csv_from_s3(s3_uri)
+        df = self._csv_to_dataframe(csv_bytes, schema)
+        for offset in range(0, len(df), page_size):
+            yield df.slice(offset, page_size)
+
     def results(self, execution_id: str, max_rows: int = 1000) -> pl.DataFrame:
-        """Get query results as a Polars DataFrame using PyArrow for better type handling"""
+        """Get query results as a Polars DataFrame.
+
+        Tries reading the CSV result file directly from S3 first; falls back
+        to the paginated JSON API on failure.
+        """
+        # --- S3 direct-read fast path ---
+        try:
+            qe = self._last_query_execution
+            if qe is None or qe.get("QueryExecutionId") != execution_id:
+                qe = self.get_query_info(execution_id)
+            stmt_type = qe.get("StatementType", "")
+            output_loc = qe.get("ResultConfiguration", {}).get("OutputLocation", "")
+            if stmt_type == "DML" and output_loc:
+                return self._results_from_s3(
+                    execution_id, output_loc, max_rows=max_rows
+                )
+        except Exception:
+            pass  # Fall through to JSON API
+
+        # --- Existing JSON API path ---
         try:
             # Get first batch to extract schema
             response = self.client.get_query_results(
@@ -244,16 +373,37 @@ class AthenaClient:
         except Exception as e:
             raise Exception(f"Failed to retrieve query results: {e}") from e
 
-    def results_iter(self, execution_id: str, page_size: int = 1000) -> Iterator[pl.DataFrame]:
+    def results_iter(
+        self, execution_id: str, page_size: int = 1000
+    ) -> Iterator[pl.DataFrame]:
         """Yield query results page-by-page as Polars DataFrames.
+
+        Tries reading the CSV result file directly from S3 first; falls back
+        to the paginated JSON API on failure.
 
         Args:
             execution_id: The query execution ID.
             page_size: Rows per page (capped at 1000, the Athena API limit).
 
         Yields:
-            One ``pl.DataFrame`` per API page.
+            One ``pl.DataFrame`` per batch.
         """
+        # --- S3 direct-read fast path ---
+        try:
+            qe = self._last_query_execution
+            if qe is None or qe.get("QueryExecutionId") != execution_id:
+                qe = self.get_query_info(execution_id)
+            stmt_type = qe.get("StatementType", "")
+            output_loc = qe.get("ResultConfiguration", {}).get("OutputLocation", "")
+            if stmt_type == "DML" and output_loc:
+                yield from self._results_iter_from_s3(
+                    execution_id, output_loc, page_size=page_size
+                )
+                return
+        except Exception:
+            pass  # Fall through to JSON API
+
+        # --- Existing JSON API path ---
         page_size = min(page_size, 1000)
 
         try:
